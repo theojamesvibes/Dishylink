@@ -18,6 +18,9 @@ import {
   writeJsonLinesAtomically,
 } from "./jsonLinesFile.mts";
 import { minuteCutoffSec, retentionDaysFromEnv } from "./retention.mts";
+import { HourlyTier } from "./hourlyTier.mts";
+import { foldLatencyMinutesToHours, type LatencyHourBucket } from "../core/historySeries.ts";
+import { RECENT_MINUTES_SEC } from "./minuteCache.mts";
 import {
   foldLatencyMinutesToMonths,
   latencyMonthKeyOf,
@@ -43,14 +46,28 @@ export class LatencyStore {
   private maxWrittenMinute = -1;
   /** Sibling log holding one row per archived month. */
   private readonly monthlyPath: string;
+  /** Sibling log holding one row per completed hour, kept for good. */
+  private readonly hourly: HourlyTier<LatencyMinuteBucket, LatencyHourBucket>;
+  /** The newest minutes in memory; see EnergyStore for why. */
+  private recent: LatencyMinuteBucket[] = [];
 
   constructor(private readonly filePath: string) {
     this.monthlyPath = filePath.replace(/\.ndjson$/, "") + "-monthly.ndjson";
     ensureParentDirectory(filePath);
+    this.hourly = new HourlyTier(
+      filePath.replace(/\.ndjson$/, "") + "-hourly.ndjson",
+      foldLatencyMinutesToHours,
+    );
+    const all = this.readAll();
+    const nowSec = Math.floor(Date.now() / 1000);
+    this.hourly.backfill(all, nowSec);
     this.compact();
-    for (const bucket of this.readAll()) {
+    for (const bucket of all) {
       if (bucket.minute > this.maxWrittenMinute) this.maxWrittenMinute = bucket.minute;
     }
+    this.recent = all
+      .filter((bucket) => bucket.minute >= nowSec - RECENT_MINUTES_SEC)
+      .sort((a, b) => a.minute - b.minute);
   }
 
   /**
@@ -100,14 +117,29 @@ export class LatencyStore {
   append(bucket: LatencyMinuteBucket): void {
     appendJsonLines(this.filePath, [bucket]);
     if (bucket.minute > this.maxWrittenMinute) this.maxWrittenMinute = bucket.minute;
+    const nowSec = Math.floor(Date.now() / 1000);
+    this.recent.push(bucket);
+    while (this.recent.length > 0 && this.recent[0].minute < nowSec - RECENT_MINUTES_SEC) {
+      this.recent.shift();
+    }
+    this.hourly.noteMinute(bucket);
+    this.hourly.rollup(this.recent, nowSec);
   }
 
   private readAll(): LatencyMinuteBucket[] {
     return readJsonLines<LatencyMinuteBucket>(this.filePath);
   }
 
-  /** Persisted buckets whose minute falls in [startSec, endSec). */
+  /** Persisted buckets whose minute falls in [startSec, endSec). Served from
+   *  memory when the range lies within the recent minutes, else from disk. */
   readRange(startSec: number, endSec: number): LatencyMinuteBucket[] {
-    return this.readAll().filter((bucket) => bucket.minute >= startSec && bucket.minute < endSec);
+    const cacheFloorSec = Math.floor(Date.now() / 1000) - RECENT_MINUTES_SEC;
+    const source = startSec >= cacheFloorSec ? this.recent : this.readAll();
+    return source.filter((bucket) => bucket.minute >= startSec && bucket.minute < endSec);
+  }
+
+  /** Completed hours in [startSec, endSec), oldest first. Kept for good. */
+  readHours(startSec: number, endSec: number): LatencyHourBucket[] {
+    return this.hourly.readRange(startSec, endSec);
   }
 }

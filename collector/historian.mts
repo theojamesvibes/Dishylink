@@ -52,8 +52,15 @@ import {
   type TelemetrySample,
 } from "../core/telemetry.ts";
 import { EnergyStore, foldSamplesToMinutes, type MinuteBucket } from "./energyStore.mts";
+import { RECENT_MINUTES_SEC } from "./minuteCache.mts";
 import { energyRangeBounds, RANGES, summarizeEnergy, type Range } from "../core/energySummary.ts";
 import { LatencyStore, type LatencyMinuteBucket } from "./latencyStore.mts";
+import {
+  buildHistorySeries,
+  HISTORY_RANGES,
+  historyRangeSpec,
+  type HistoryRange,
+} from "../core/historySeries.ts";
 import { foldSamplesToLatencyMinutes } from "../core/latencyBuckets.ts";
 import { summarizeLatency } from "../core/latencySummary.ts";
 import { ThermalStore } from "./thermalStore.mts";
@@ -1581,6 +1588,31 @@ function summarizeLatencyRange(range: Range, now: Date) {
   return summarizeLatency(latencyBucketsInRange(startSec, endSec), range, now);
 }
 
+/**
+ * The long-range chart series (24h … lifetime) from the persisted tiers:
+ * recent minutes (with the in-progress ones), completed hours, archived
+ * months. Lifetime's window depends on the oldest row, so the tiers are read
+ * whole for it and trimmed by the fold.
+ */
+function historySeries(range: HistoryRange, now: Date) {
+  const endSec = Math.floor(now.getTime() / 1000);
+  const wholeStore = { minutes: [], hours: [], months: [], latencyMinutes: [], latencyHours: [], latencyMonths: [] };
+  const { startSec } =
+    range === "lifetime" ? { startSec: 0 } : historyRangeSpec(range, now, wholeStore);
+  // Minutes serve the newest hours (not yet rolled up) and the short ranges;
+  // the fold prefers them wherever they exist, so hand over only the recent
+  // ones and let hours cover the rest.
+  const minuteFloorSec = Math.max(startSec, endSec - RECENT_MINUTES_SEC);
+  return buildHistorySeries(range, now, {
+    minutes: bucketsInRange(minuteFloorSec, endSec),
+    hours: store.readHours(startSec, endSec),
+    months: range === "lifetime" ? store.readMonths() : [],
+    latencyMinutes: latencyBucketsInRange(minuteFloorSec, endSec),
+    latencyHours: latencyStore.readHours(startSec, endSec),
+    latencyMonths: range === "lifetime" ? latencyStore.readMonths() : [],
+  });
+}
+
 /** Whether a request was addressed to this machine by a loopback name. */
 function isLocalHost(host?: string): boolean {
   if (!host) return false;
@@ -1629,6 +1661,16 @@ export function handleRequest(request: IncomingMessage, response: ServerResponse
     const range: Range = rangeParam && RANGES.includes(rangeParam) ? rangeParam : "today";
     response.setHeader("Content-Type", "application/json");
     response.end(JSON.stringify(summarizeLatencyRange(range, new Date())));
+    return;
+  }
+  // Long-range chart series from the persisted tiers, for the windows past
+  // the six hours of raw samples: 24h, 1w, 1m, 90d, lifetime.
+  if (url.pathname === "/api/history") {
+    const rangeParam = url.searchParams.get("range") as HistoryRange | null;
+    const range: HistoryRange =
+      rangeParam && HISTORY_RANGES.includes(rangeParam) ? rangeParam : "24h";
+    response.setHeader("Content-Type", "application/json");
+    response.end(JSON.stringify(historySeries(range, new Date())));
     return;
   }
   // Full-resolution sample window for chart backfill after a page reload.

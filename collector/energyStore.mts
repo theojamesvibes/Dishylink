@@ -26,6 +26,9 @@ import {
   type MonthBucket,
 } from "../core/energyBuckets.ts";
 import { minuteCutoffSec, retentionDaysFromEnv } from "./retention.mts";
+import { HourlyTier } from "./hourlyTier.mts";
+import { foldMinutesToHours, type HourBucket } from "../core/historySeries.ts";
+import { RECENT_MINUTES_SEC } from "./minuteCache.mts";
 
 // The fold primitives and bucket shapes are shared with the extension, so they
 // live in core; re-exported here because this store and the historian have
@@ -36,14 +39,33 @@ export class EnergyStore {
   private maxWrittenMinute = -1;
   /** Sibling log holding one row per archived month. */
   private readonly monthlyPath: string;
+  /** Sibling log holding one row per completed hour, kept for good. */
+  private readonly hourly: HourlyTier<MinuteBucket, HourBucket>;
+  /** The newest minutes, held in memory so the ranges every open dashboard
+   *  polls (hours, a day, a week) never re-read the whole log. Older minutes
+   *  are read through to disk as before. */
+  private recent: MinuteBucket[] = [];
 
   constructor(private readonly filePath: string) {
     this.monthlyPath = filePath.replace(/\.ndjson$/, "") + "-monthly.ndjson";
     ensureParentDirectory(filePath);
+    // Hours are folded before minutes past retention are folded into months,
+    // so a store upgraded from a build without the hourly tier still gets an
+    // hourly row for every minute it has.
+    this.hourly = new HourlyTier(
+      filePath.replace(/\.ndjson$/, "") + "-hourly.ndjson",
+      foldMinutesToHours,
+    );
+    const all = this.readAll();
+    const nowSec = Math.floor(Date.now() / 1000);
+    this.hourly.backfill(all, nowSec);
     this.compact();
-    for (const bucket of this.readAll()) {
+    for (const bucket of all) {
       if (bucket.minute > this.maxWrittenMinute) this.maxWrittenMinute = bucket.minute;
     }
+    this.recent = all
+      .filter((bucket) => bucket.minute >= nowSec - RECENT_MINUTES_SEC)
+      .sort((a, b) => a.minute - b.minute);
   }
 
   /**
@@ -91,14 +113,29 @@ export class EnergyStore {
   append(bucket: MinuteBucket): void {
     appendJsonLines(this.filePath, [bucket]);
     if (bucket.minute > this.maxWrittenMinute) this.maxWrittenMinute = bucket.minute;
+    const nowSec = Math.floor(Date.now() / 1000);
+    this.recent.push(bucket);
+    while (this.recent.length > 0 && this.recent[0].minute < nowSec - RECENT_MINUTES_SEC) {
+      this.recent.shift();
+    }
+    this.hourly.noteMinute(bucket);
+    this.hourly.rollup(this.recent, nowSec);
   }
 
   private readAll(): MinuteBucket[] {
     return readJsonLines<MinuteBucket>(this.filePath);
   }
 
-  /** Persisted buckets whose minute falls in [startSec, endSec). */
+  /** Persisted buckets whose minute falls in [startSec, endSec). Served from
+   *  memory when the range lies within the recent minutes, else from disk. */
   readRange(startSec: number, endSec: number): MinuteBucket[] {
-    return this.readAll().filter((bucket) => bucket.minute >= startSec && bucket.minute < endSec);
+    const cacheFloorSec = Math.floor(Date.now() / 1000) - RECENT_MINUTES_SEC;
+    const source = startSec >= cacheFloorSec ? this.recent : this.readAll();
+    return source.filter((bucket) => bucket.minute >= startSec && bucket.minute < endSec);
+  }
+
+  /** Completed hours in [startSec, endSec), oldest first. Kept for good. */
+  readHours(startSec: number, endSec: number): HourBucket[] {
+    return this.hourly.readRange(startSec, endSec);
   }
 }
