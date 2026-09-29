@@ -25,6 +25,7 @@ import {
   readJsonLines,
   writeJsonLinesAtomically,
 } from "./jsonLinesFile.mts";
+import { retentionMs } from "./retention.mts";
 import type { AlertSeverity } from "../core/alertDefinitions.ts";
 
 /** The two devices, plus "system" for conditions the historian observes about
@@ -48,7 +49,8 @@ export interface AlertEpisode {
 // 48 hours, one window shared with the event and thermal logs it sits beside,
 // so "has this dish been flagging water ingress / thermal trouble lately?" reads
 // over the same span everywhere.
-const RETENTION_MS = 48 * 3_600_000;
+// Widened, never narrowed, by HISTORIAN_EVENT_RETENTION_DAYS — see retention.mts.
+const RETENTION_MS = retentionMs("HISTORIAN_EVENT_RETENTION_DAYS", 2);
 
 export class AlertStore {
   private episodes: AlertEpisode[] = [];

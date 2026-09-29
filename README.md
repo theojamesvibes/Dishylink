@@ -186,6 +186,11 @@ Optional, in `compose.yaml`:
 
 - `HOST_LAN_IP` / `HOST_MAC` — the host's LAN address, so "This device" and
   pause-self-protect still work through Docker Desktop's port publish.
+- `HISTORIAN_ROUTER_DISABLED=1` — no Starlink router on the kit: skip every
+  router poll and answer the dashboard's router requests at once.
+- `HISTORIAN_MINUTE_RETENTION_DAYS`, `HISTORIAN_EVENT_RETENTION_DAYS`,
+  `HISTORIAN_OBSTRUCTION_RETENTION_DAYS` — widen the recorder's history
+  windows; see `collector/README.md`.
 
 Cloud session writes stay localhost-only. Opening the dashboard via the host's
 LAN IP from a phone still shows live data and history.

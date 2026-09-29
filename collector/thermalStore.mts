@@ -15,6 +15,7 @@ import {
   readJsonLines,
   writeJsonLinesAtomically,
 } from "./jsonLinesFile.mts";
+import { retentionMs } from "./retention.mts";
 
 export interface ThermalEpisode {
   /** `alerts` key that produced this, e.g. "thermalThrottle". */
@@ -26,7 +27,8 @@ export interface ThermalEpisode {
 
 // 48 hours, matching the event store: both feed the same "Events & outages"
 // panel, and it stays coherent when the two are kept to one window.
-const RETENTION_MS = 48 * 3_600_000;
+// Widened, never narrowed, by HISTORIAN_EVENT_RETENTION_DAYS — see retention.mts.
+const RETENTION_MS = retentionMs("HISTORIAN_EVENT_RETENTION_DAYS", 2);
 
 export class ThermalStore {
   private episodes: ThermalEpisode[] = [];

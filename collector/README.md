@@ -48,6 +48,24 @@ launchctl unload ~/Library/LaunchAgents/com.dishylink.historian.plist
 The plist paths are absolute for this machine — update them if the repo moves or
 the Node version changes.
 
+## Configuration
+
+Environment variables, all optional. Unset means the behaviour described above.
+
+- `HISTORIAN_ROUTER_DISABLED=1` — a kit with no Starlink router (dish on its
+  own, or behind third-party gear). Every router call is skipped: the client
+  poll, the router's event log, its status and ping, radio temperatures, and the
+  browser host's `/router` proxy. Dish recording is unchanged, and the
+  `router history unreachable` warning no longer repeats every cycle.
+- `HISTORIAN_MINUTE_RETENTION_DAYS` — keep per-minute energy and latency rows
+  at least this many days back, not only for the calendar year. The cutoff
+  snaps to a month start so the monthly rollup stays whole-month. Never drops
+  anything the default would have kept.
+- `HISTORIAN_EVENT_RETENTION_DAYS` — outage events, alerts and thermal
+  episodes (default 2).
+- `HISTORIAN_OBSTRUCTION_RETENTION_DAYS` — hourly sky snapshots (default 7).
+  Ninety days is about 11 MB, rewritten hourly and sent whole to the scrubber.
+
 ## API
 
 - `GET /api/energy?range=day|week|month` →

@@ -21,6 +21,7 @@ import {
   readJsonLines,
   writeJsonLinesAtomically,
 } from "./jsonLinesFile.mts";
+import { retentionMs } from "./retention.mts";
 import { canonicalCause } from "../core/telemetry.ts";
 
 export interface StoredEvent {
@@ -33,7 +34,8 @@ export interface StoredEvent {
 // 48 hours. The event log is a "what happened recently" panel, not an archive;
 // two days keeps it deep enough that a couple of nights back is still there
 // while sharing one window with the alert and thermal logs beside it.
-const RETENTION_MS = 48 * 3_600_000;
+// Widened, never narrowed, by HISTORIAN_EVENT_RETENTION_DAYS — see retention.mts.
+const RETENTION_MS = retentionMs("HISTORIAN_EVENT_RETENTION_DAYS", 2);
 
 /** Same outage seen again across polls: the dish restates it with a longer
  *  duration. Keyed on the canonical cause token (not the raw/label spelling) so

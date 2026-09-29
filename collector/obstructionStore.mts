@@ -18,6 +18,7 @@ import {
   readJsonLines,
   writeJsonLinesAtomically,
 } from "./jsonLinesFile.mts";
+import { retentionMs } from "./retention.mts";
 
 export interface ObstructionSnapshot {
   takenAtMs: number;
@@ -36,7 +37,9 @@ export const SNAPSHOT_INTERVAL_MS = 3_600_000;
  * A week, where localStorage managed two days. Each snapshot is a 123×123 grid
  * at 2 bits per cell — about 5 kB of base64 — so a week is well under a megabyte.
  */
-const RETENTION_MS = 7 * 24 * 3_600_000;
+// Widened by HISTORIAN_OBSTRUCTION_RETENTION_DAYS (see retention.mts); 90 days
+// of hourly frames is ~11 MB, rewritten once an hour and sent whole to the scrubber.
+const RETENTION_MS = retentionMs("HISTORIAN_OBSTRUCTION_RETENTION_DAYS", 7);
 
 // Thresholds duplicated from the client's obstructionSnapshots.ts. They have to
 // agree, because a snapshot written here is rendered by that code.

@@ -17,6 +17,7 @@ import {
   readJsonLines,
   writeJsonLinesAtomically,
 } from "./jsonLinesFile.mts";
+import { minuteCutoffSec, retentionDaysFromEnv } from "./retention.mts";
 import {
   foldLatencyMinutesToMonths,
   latencyMonthKeyOf,
@@ -59,7 +60,12 @@ export class LatencyStore {
    */
   compact(): number {
     const all = this.readAll();
-    const cutoffSec = latencyYearStartSec(new Date());
+    const now = new Date();
+    const cutoffSec = minuteCutoffSec(
+      latencyYearStartSec(now),
+      now,
+      retentionDaysFromEnv("HISTORIAN_MINUTE_RETENTION_DAYS"),
+    );
     const kept = all.filter((bucket) => bucket.minute >= cutoffSec);
     const expired = all.filter((bucket) => bucket.minute < cutoffSec);
     if (expired.length === 0) return 0;
