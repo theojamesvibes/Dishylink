@@ -61,6 +61,29 @@ export function formatClockTime(timestampMs: number): string {
   });
 }
 
+/**
+ * A chart's time label sized to its window: the clock for anything up to a
+ * day, the date and hour up to a few days, the date alone beyond — a tick
+ * reading "14:00" on a 90-day axis says nothing about which day it means.
+ */
+export function formatAxisTime(timestampMs: number, windowMs: number): string {
+  const date = new Date(timestampMs);
+  if (windowMs <= 24 * 3_600_000) return formatClockTime(timestampMs).slice(0, 5);
+  const day = date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  if (windowMs <= 3 * 86_400_000) {
+    return `${day} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  if (windowMs <= 400 * 86_400_000) return day;
+  return date.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+}
+
+/** The tooltip's counterpart: the full clock within a day, the date and
+ *  time beyond it. */
+export function formatPointTime(timestampMs: number, windowMs: number): string {
+  if (windowMs <= 24 * 3_600_000) return formatClockTime(timestampMs);
+  return formatDateTime(timestampMs);
+}
+
 /** Hour and minute only, no seconds ("5:48 PM"), as the official app shows event times. */
 export function formatClockTimeShort(timestampMs: number): string {
   return new Date(timestampMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });

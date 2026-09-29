@@ -13,6 +13,12 @@ import { LatencyHistogram } from "./LatencyHistogram";
 import { EnergyHistoryPanel } from "./EnergyHistoryPanel";
 import { averageOf, energyKWh, coverageNote } from "../../lib/statDetails";
 import { useEnergyHistory, type EnergyRange } from "../../hooks/useEnergyHistory";
+import { useHistorySeries } from "../../hooks/useHistorySeries";
+import {
+  CHART_WINDOW_OPTIONS,
+  LIFETIME_WINDOW_MINUTES,
+  historyRangeForWindow,
+} from "../../lib/chartWindow";
 import { useNow } from "../../hooks/useNow";
 import type { TelemetrySample, OutageEvent } from "@core/telemetry";
 import { SegmentedControl } from "../ui/segmented-control";
@@ -72,17 +78,9 @@ export interface StatDetail {
   defaultWindowMinutes?: number;
 }
 
-const WINDOW_CHOICES: { label: string; minutes: number }[] = [
-  { label: "15M", minutes: 15 },
-  { label: "1H", minutes: 60 },
-  { label: "6H", minutes: 360 },
-];
-
-/** ToggleGroup values are strings; minutes stay the source of truth. */
-const WINDOW_OPTIONS = WINDOW_CHOICES.map((choice) => ({
-  label: choice.label,
-  value: String(choice.minutes),
-}));
+/** The same windows as the dashboard's charts, live to 6H and the recorder's
+ *  history beyond (see lib/chartWindow). */
+const WINDOW_OPTIONS = CHART_WINDOW_OPTIONS;
 
 interface StatDetailPanelProps {
   detail: StatDetail;
@@ -97,22 +95,36 @@ export function StatDetailPanel({ detail, samples }: StatDetailPanelProps) {
 
   const getSeriesValue = detail.series[0].getValue;
   const nowMs = useNow();
+  // Past six hours the live buffer is empty and the recorder's history stands
+  // in: one averaged point per bucket, in the same sample shape, so the
+  // figures and chart below need no second code path. Lifetime is sized to
+  // the history that came back.
+  const historyRange = historyRangeForWindow(windowMinutes);
+  const history = useHistorySeries(historyRange);
+  const chartWindowMinutes =
+    windowMinutes === LIFETIME_WINDOW_MINUTES
+      ? Math.max(1_440, Math.ceil((nowMs - (history.startMs ?? nowMs)) / 60_000))
+      : windowMinutes;
   // The same function the chart clips with, so the figures below and the picture
   // above describe one stretch of time by construction. It cuts by clock, which
   // is the only thing that works here: the buffer runs at 1 Hz solely while
   // nothing interrupts it, so counting out windowMinutes × 60 samples reaches
   // back through any recording gap and averages hours the window never claimed.
-  const windowed = useMemo(
-    () => windowTail(samples, windowMinutes, nowMs),
-    [samples, windowMinutes, nowMs],
+  const liveWindowed = useMemo(
+    () => (historyRange ? [] : windowTail(samples, windowMinutes, nowMs)),
+    [historyRange, samples, windowMinutes, nowMs],
   );
+  const windowed = historyRange ? history.samples : liveWindowed;
   // The power panel freezes its chart on the 5s boundary, so that chart trims to
   // the same instant — otherwise a live floor drops samples still inside the
   // frozen window and creeps its left edge every second. The figures and energy
   // below keep `windowed` (cut to now), so their math is untouched.
-  const chartWindowed = detail.chartWindowEndMs
-    ? windowTail(samples, windowMinutes, detail.chartWindowEndMs)
-    : windowed;
+  const chartWindowed =
+    detail.chartWindowEndMs && !historyRange
+      ? windowTail(samples, windowMinutes, detail.chartWindowEndMs)
+      : windowed;
+  const chartWindowEndMs = historyRange ? undefined : detail.chartWindowEndMs;
+  const chartMinGapMs = historyRange ? history.maxSpanMs * 2.5 : undefined;
   const averageValue = useMemo(
     () => averageOf(windowed, getSeriesValue),
     [windowed, getSeriesValue],
@@ -133,12 +145,24 @@ export function StatDetailPanel({ detail, samples }: StatDetailPanelProps) {
   const useHistorianEnergy = Boolean(
     historianRange && !energyHistory.unavailable && energyHistory.data,
   );
-  const displayEnergyKWh = useHistorianEnergy ? energyHistory.data!.totalKWh : windowEnergy;
-  const energyNote = useHistorianEnergy
-    ? energyHistory.data!.coverage.fraction >= 0.95
+  // A history window's energy is the history's own: its points carry the
+  // recorded seconds, and the live integral would see only one point an hour.
+  const displayEnergyKWh = historyRange
+    ? history.energyKWh
+    : useHistorianEnergy
+      ? energyHistory.data!.totalKWh
+      : windowEnergy;
+  const coverageWording = (fraction: number) =>
+    fraction >= 0.95
       ? "over the selected window"
-      : `recorded ${Math.round(energyHistory.data!.coverage.fraction * 100)}% of this window`
-    : coverageNote(windowed, windowMinutes);
+      : `recorded ${Math.round(fraction * 100)}% of this window`;
+  const energyNote = historyRange
+    ? history.unavailable
+      ? "recorder not reachable"
+      : coverageWording(history.coverageFraction)
+    : useHistorianEnergy
+      ? coverageWording(energyHistory.data!.coverage.fraction)
+      : coverageNote(windowed, windowMinutes);
 
   // An empty chart is just a confusing box; say so in words until a reading
   // lands. Finite-checked, not merely non-null: a snapshot written before this
@@ -198,14 +222,22 @@ export function StatDetailPanel({ detail, samples }: StatDetailPanelProps) {
       <TelemetryChart
         samples={chartWindowed}
         series={detail.series}
-        windowMinutes={windowMinutes}
+        windowMinutes={chartWindowMinutes}
+        minGapMs={chartMinGapMs}
         formatValue={detail.formatValue}
         formatTick={detail.formatTick}
         outageEvents={detail.outageEvents}
         maxValue={detail.maxValue}
-        windowEndMs={detail.chartWindowEndMs}
+        windowEndMs={chartWindowEndMs}
         height={220}
       />
+      {historyRange && (
+        <p className='mt-1.5 text-[12px] font-medium text-muted-foreground'>
+          {history.unavailable
+            ? "Recorder not reachable — windows past 6H are drawn from its history."
+            : "Recorder history: each point is the average over its bucket, minutes for a day or a week, hours beyond."}
+        </p>
+      )}
 
       {/* Two lines on one axis need naming; a single line is named by the panel
           title. Same placement as the official app: dots under the chart. */}
@@ -226,7 +258,9 @@ export function StatDetailPanel({ detail, samples }: StatDetailPanelProps) {
         </div>
       )}
 
-      {detail.distribution && (
+      {/* The histogram needs the 1 Hz readings; over a history window it would
+          bin bucket averages and show a distribution nobody measured. */}
+      {detail.distribution && !historyRange && (
         <section className='mt-4'>
           <h3 className='text-[15px] font-semibold'>Latency distribution</h3>
           <p className='mt-0.5 mb-2 text-[12px] font-medium text-muted-foreground'>
@@ -248,7 +282,8 @@ export function StatDetailPanel({ detail, samples }: StatDetailPanelProps) {
               <TelemetryChart
                 samples={windowed}
                 series={detail.secondaryChart.series}
-                windowMinutes={windowMinutes}
+                windowMinutes={chartWindowMinutes}
+                minGapMs={chartMinGapMs}
                 formatValue={detail.formatValue}
                 formatTick={detail.formatTick}
                 outageEvents={detail.outageEvents}

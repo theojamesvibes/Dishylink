@@ -20,6 +20,8 @@ import { TopBar } from "./components/dashboard/TopBar";
 import { AppToolbar } from "./components/toolbar/AppToolbar";
 import { DashboardView } from "./components/dashboard/DashboardView";
 import { windowTail } from "./lib/telemetryWindow";
+import { historyRangeForWindow, LIFETIME_WINDOW_MINUTES } from "./lib/chartWindow";
+import { useHistorySeries } from "./hooks/useHistorySeries";
 import { SatelliteView } from "./components/satellite/SatelliteView";
 import { DishTerminalCard } from "./components/dashboard/DishTerminalCard";
 import { DetailsModal } from "./components/ui/details-modal";
@@ -102,14 +104,26 @@ export default function App() {
 
   const liveDownlink = formatThroughput(status?.downlinkThroughputBps ?? 0);
   const liveUplink = formatThroughput(status?.uplinkThroughputBps ?? 0);
-  const chartSamples = useMemo(
-    () => windowTail(samples, windowMinutes, nowMs),
-    [samples, windowMinutes, nowMs],
+  // Past six hours the live buffer has nothing, so the charts draw the
+  // recorder's persisted history instead — the same TelemetrySample shape,
+  // one point per bucket. Lifetime has no fixed width: the chart is sized to
+  // the history that came back, a day wide until it has.
+  const historyRange = historyRangeForWindow(windowMinutes);
+  const history = useHistorySeries(historyRange);
+  const chartWindowMinutes =
+    windowMinutes === LIFETIME_WINDOW_MINUTES
+      ? Math.max(1_440, Math.ceil((nowMs - (history.startMs ?? nowMs)) / 60_000))
+      : windowMinutes;
+  const liveChartSamples = useMemo(
+    () => (historyRange ? [] : windowTail(samples, windowMinutes, nowMs)),
+    [historyRange, samples, windowMinutes, nowMs],
   );
-  const powerChartSamples = useMemo(
-    () => windowTail(samples, windowMinutes, powerWindowEndMs),
-    [samples, windowMinutes, powerWindowEndMs],
+  const livePowerChartSamples = useMemo(
+    () => (historyRange ? [] : windowTail(samples, windowMinutes, powerWindowEndMs)),
+    [historyRange, samples, windowMinutes, powerWindowEndMs],
   );
+  const chartSamples = historyRange ? history.samples : liveChartSamples;
+  const powerChartSamples = historyRange ? history.samples : livePowerChartSamples;
   return (
     <TooltipProvider delayDuration={200}>
       <AnimatePresence initial={false} mode='wait'>
@@ -144,6 +158,10 @@ export default function App() {
               livePowerW={livePowerW}
               recentPingSuccessPercent={recentPingSuccessPercent}
               windowMinutes={windowMinutes}
+              chartWindowMinutes={chartWindowMinutes}
+              chartMinGapMs={historyRange ? history.maxSpanMs * 2.5 : undefined}
+              historyMode={historyRange !== null}
+              historyUnavailable={historyRange !== null && history.unavailable}
               onWindowMinutesChange={setWindowMinutes}
               chartSamples={chartSamples}
               powerChartSamples={powerChartSamples}

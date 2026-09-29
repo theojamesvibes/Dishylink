@@ -3,7 +3,7 @@
 
 import { useMemo, useRef, useState, useEffect, useCallback, useId } from "react";
 import { outageEventKind, type TelemetrySample, type OutageEvent } from "@core/telemetry";
-import { formatClockTime } from "../../lib/format";
+import { formatAxisTime, formatPointTime } from "../../lib/format";
 import {
   Crosshair,
   NoDataBands,
@@ -398,7 +398,7 @@ export function TelemetryChart({
         <PlotTimeAxis
           y={height - 6}
           ticks={xTickTimes.map((tickTime) => ({
-            label: formatClockTime(tickTime).slice(0, 5),
+            label: formatAxisTime(tickTime, windowEndMs - windowStartMs),
             x: xForTime(tickTime),
           }))}
         />
@@ -461,7 +461,7 @@ export function TelemetryChart({
           }}
         >
           <div className='mb-[5px] text-[10px] tracking-[0.05em] text-muted-foreground'>
-            {formatClockTime(hoveredBucket.timestampMs)}
+            {formatPointTime(hoveredBucket.timestampMs, windowEndMs - windowStartMs)}
           </div>
           {series.map((chartSeries, seriesIndex) => (
             <div

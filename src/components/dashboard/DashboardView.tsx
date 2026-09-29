@@ -24,17 +24,14 @@ import { DetailsModal } from "../ui/details-modal";
 import { StatDetailPanel } from "./StatDetailPanel";
 import { formatThroughputLabel, formatThroughputTick } from "../../lib/format";
 import { AppPrompts } from "../shared/AppPrompts";
+import { CHART_WINDOW_OPTIONS } from "../../lib/chartWindow";
 
-const CHART_TIME_RANGES: { label: string; minutes: number }[] = [
-  { label: "15M", minutes: 15 },
-  { label: "1H", minutes: 60 },
-  { label: "6H", minutes: 360 },
-];
-
-const CHART_TIME_RANGE_FILTER_OPTIONS = CHART_TIME_RANGES.map((range) => ({
-  label: range.label,
-  value: String(range.minutes),
-}));
+/** What the long-window charts are drawn from, said once per card. */
+function historyMeta(unavailable: boolean, detail: string): string {
+  return unavailable
+    ? "recorder not reachable — windows past 6H need it"
+    : `recorder history · ${detail}`;
+}
 
 const legendItem = "inline-flex items-center gap-1.5 text-[12px] font-medium text-ink-secondary";
 
@@ -55,7 +52,17 @@ interface DashboardViewProps {
   sparklines: LiveSparklines;
   livePowerW: number;
   recentPingSuccessPercent: number;
+  /** The picker's value; Infinity for lifetime. */
   windowMinutes: number;
+  /** The width the charts actually draw — the picker's, except lifetime,
+   *  which is sized to the history that came back. */
+  chartWindowMinutes: number;
+  /** Set for history-drawn windows: their points are minutes or hours apart,
+   *  so the chart's 30 s gap rule would fracture every line. */
+  chartMinGapMs?: number;
+  /** The samples are the recorder's history, not the live buffer. */
+  historyMode: boolean;
+  historyUnavailable: boolean;
   onWindowMinutesChange: (minutes: number) => void;
   chartSamples: TelemetrySample[];
   powerChartSamples: TelemetrySample[];
@@ -79,6 +86,10 @@ export function DashboardView({
   livePowerW,
   recentPingSuccessPercent,
   windowMinutes,
+  chartWindowMinutes,
+  chartMinGapMs,
+  historyMode,
+  historyUnavailable,
   onWindowMinutesChange,
   chartSamples,
   powerChartSamples,
@@ -230,7 +241,7 @@ export function DashboardView({
           className='col-span-8'
           headerAction={
             <SegmentedControl
-              options={CHART_TIME_RANGE_FILTER_OPTIONS}
+              options={CHART_WINDOW_OPTIONS}
               value={String(windowMinutes)}
               onChange={(minutes) => onWindowMinutesChange(Number(minutes))}
               label='Chart time window'
@@ -240,7 +251,8 @@ export function DashboardView({
           <TelemetryChart
             samples={chartSamples}
             series={THROUGHPUT_SERIES}
-            windowMinutes={windowMinutes}
+            windowMinutes={chartWindowMinutes}
+            minGapMs={chartMinGapMs}
             formatValue={formatThroughputLabel}
             formatTick={formatThroughputTick}
             outageEvents={outageEvents}
@@ -255,6 +267,11 @@ export function DashboardView({
                 {entry.label}
               </span>
             ))}
+            {historyMode && (
+              <span className='text-[12px] font-medium text-muted-foreground'>
+                {historyMeta(historyUnavailable, "average rate per bucket")}
+              </span>
+            )}
           </div>
         </SectionCard>
 
@@ -267,11 +284,20 @@ export function DashboardView({
         />
 
         {/* Latency chart */}
-        <SectionCard title='Latency' className='col-span-8' meta='pop ping · red bands = outages'>
+        <SectionCard
+          title='Latency'
+          className='col-span-8'
+          meta={
+            historyMode
+              ? historyMeta(historyUnavailable, "mean pop ping per bucket · red bands = outages")
+              : "pop ping · red bands = outages"
+          }
+        >
           <TelemetryChart
             samples={chartSamples}
             series={LATENCY_SERIES}
-            windowMinutes={windowMinutes}
+            windowMinutes={chartWindowMinutes}
+            minGapMs={chartMinGapMs}
             formatValue={(value) => `${value.toFixed(0)} ms`}
             outageEvents={outageEvents}
             height={160}
@@ -282,14 +308,19 @@ export function DashboardView({
         <SectionCard
           title='Power draw'
           className='col-span-8'
-          meta={`≈ ${((averagePowerW * 24) / 1000).toFixed(2)} kWh/day at recent draw`}
+          meta={
+            historyMode
+              ? historyMeta(historyUnavailable, "average draw per bucket")
+              : `≈ ${((averagePowerW * 24) / 1000).toFixed(2)} kWh/day at recent draw`
+          }
         >
           <TelemetryChart
             samples={powerChartSamples}
             series={POWER_SERIES}
-            windowMinutes={windowMinutes}
+            windowMinutes={chartWindowMinutes}
+            minGapMs={chartMinGapMs}
             formatValue={(value) => `${value.toFixed(0)} W`}
-            windowEndMs={powerWindowEndMs}
+            windowEndMs={historyMode ? undefined : powerWindowEndMs}
             height={160}
           />
         </SectionCard>
