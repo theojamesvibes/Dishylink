@@ -1221,19 +1221,29 @@ async function pollAlerts(): Promise<void> {
     // in history instead of only being a console warning.
     observation.dish = { alerts: null, atMs: Date.now() };
   }
-  try {
-    // One status reply, two consumers: the alert set, and the ping the sample
-    // stamping picks up below.
-    const routerStatus = await getRouterStatus();
-    latestRouterLatencyMs = readRouterLatencyMs(routerStatus.popPingLatencyMs);
-    latestRouterPingSuccessPercent = readRouterPingSuccessPercent(routerStatus.popPingDropRate5m);
-    observation.router = { alerts: routerStatus.alerts ?? {}, atMs: Date.now() };
-  } catch {
-    // router unreachable — leave its open episodes open. Whether the silence is
-    // a fault or a bypassed kit is the engine's call, off the dish reading above.
+  // A kit declared routerless gives the engine no router observation at all,
+  // rather than a silent one: a silent router is a fault unless the dish vouches
+  // for its absence, and while the dish itself is unreachable it vouches for
+  // nothing — which would raise "router unreachable" about a router that does
+  // not exist.
+  if (ROUTER_DISABLED) {
     latestRouterLatencyMs = null;
     latestRouterPingSuccessPercent = null;
-    observation.router = { alerts: null, atMs: Date.now() };
+  } else {
+    try {
+      // One status reply, two consumers: the alert set, and the ping the sample
+      // stamping picks up below.
+      const routerStatus = await getRouterStatus();
+      latestRouterLatencyMs = readRouterLatencyMs(routerStatus.popPingLatencyMs);
+      latestRouterPingSuccessPercent = readRouterPingSuccessPercent(routerStatus.popPingDropRate5m);
+      observation.router = { alerts: routerStatus.alerts ?? {}, atMs: Date.now() };
+    } catch {
+      // router unreachable — leave its open episodes open. Whether the silence is
+      // a fault or a bypassed kit is the engine's call, off the dish reading above.
+      latestRouterLatencyMs = null;
+      latestRouterPingSuccessPercent = null;
+      observation.router = { alerts: null, atMs: Date.now() };
+    }
   }
   // The satellite side, judged from the samples the previous cycle appended.
   // Neither device flags this — the dish answers perfectly while none of its
