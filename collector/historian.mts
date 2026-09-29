@@ -66,6 +66,7 @@ import { MeterStore } from "./meterStore.mts";
 import { DeviceGroupStore } from "./groupStore.mts";
 import { CollectorBusyError } from "./collectorLock.mts";
 import { isLocalOrigin } from "./localOrigin.mts";
+import { routerPollingDisabled } from "./routerPolicy.mts";
 import {
   announcementSubject,
   announcesAsGroup,
@@ -166,6 +167,10 @@ const ROUTER_PATH = "/SpaceX.API.Device.Device/Handle";
 /** Pins the router to one URL and turns the fallback off — for pointing this
  *  process at a stand-in, and for the probe scripts under scripts/. */
 const ROUTER_URL_OVERRIDE = process.env.ROUTER_URL ?? null;
+
+/** A kit with no router. Every router call fails at once, off the network, so
+ *  the call sites' existing unreachable paths apply without a timeout first. */
+const ROUTER_DISABLED = routerPollingDisabled();
 
 const routerOrigins = createRouterOrigins(
   () => [
@@ -283,6 +288,7 @@ async function routerCall(
   fieldNumber: number,
   timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<Record<string, unknown>> {
+  if (ROUTER_DISABLED) throw new Error("router polling disabled (HISTORIAN_ROUTER_DISABLED)");
   if (ROUTER_URL_OVERRIDE) return deviceCall(ROUTER_URL_OVERRIDE, fieldNumber, timeoutMs);
   const deadline = Date.now() + timeoutMs;
   return routerOrigins.run((origin) => {
@@ -1475,13 +1481,17 @@ async function poll(): Promise<void> {
 
   // The router keeps its own event log (power cycles, band-switching, updates …)
   // in wifi_get_history — same rolling/reset behaviour, so persist it the same way.
-  try {
-    const wifiHistory = await getWifiHistory();
-    const newRouterEvents = eventStore.upsert(decodeWifiHistoryEvents(wifiHistory));
-    if (newRouterEvents > 0)
-      console.log(`[historian] recorded ${newRouterEvents} event(s) from the router log`);
-  } catch (error) {
-    console.warn(`[historian] router history unreachable: ${(error as Error).message}`);
+  // Not attempted on a kit declared routerless: the warning would repeat every
+  // cycle and describe a device that is not there.
+  if (!ROUTER_DISABLED) {
+    try {
+      const wifiHistory = await getWifiHistory();
+      const newRouterEvents = eventStore.upsert(decodeWifiHistoryEvents(wifiHistory));
+      if (newRouterEvents > 0)
+        console.log(`[historian] recorded ${newRouterEvents} event(s) from the router log`);
+    } catch (error) {
+      console.warn(`[historian] router history unreachable: ${(error as Error).message}`);
+    }
   }
 
   // Stamped onto the samples this poll appends, from the status pollAlerts read
@@ -2042,6 +2052,10 @@ const pollObstructionCycle = nonOverlapping(pollObstruction);
  * import, the first poll can reach a rule with nothing behind it to pause with.
  */
 export function start(): void {
+  if (ROUTER_DISABLED)
+    console.log(
+      "[historian] router polling disabled (HISTORIAN_ROUTER_DISABLED): recording the dish only",
+    );
   void pollCycle();
   setInterval(() => void pollCycle(), POLL_MS);
   setInterval(writeSampleSnapshot, SNAPSHOT_EVERY_MS);
@@ -2052,9 +2066,12 @@ export function start(): void {
   // Clients run on their own timers: the router keeps no history, so nothing is
   // recoverable after the fact. Polling is fast enough to catch each counter step
   // as it happens; recording runs at 1 Hz and is what sets chart resolution. One
-  // call covers every client.
-  void pollClientsCycle();
-  setInterval(() => void pollClientsCycle(), CLIENTS_POLL_MS);
+  // call covers every client. With no router there is nothing to sample, so the
+  // fast timer is not started at all rather than failing five times a second.
+  if (!ROUTER_DISABLED) {
+    void pollClientsCycle();
+    setInterval(() => void pollClientsCycle(), CLIENTS_POLL_MS);
+  }
   // Checked every 5 minutes; the store's isDue() keeps the actual dish call hourly.
   void pollObstructionCycle();
   setInterval(() => void pollObstructionCycle(), 300_000);

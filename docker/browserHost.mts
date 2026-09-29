@@ -25,6 +25,7 @@ import { identityFromEnv } from "../core/hostNetworkIdentity.ts";
 import type { RouterClientUpdate } from "../core/routerClientUpdate.ts";
 import { CollectorBusyError } from "../collector/collectorLock.mts";
 import { isLocalOrigin } from "../collector/localOrigin.mts";
+import { routerPollingDisabled } from "../collector/routerPolicy.mts";
 import {
   createFileCloudHandler,
   dispatchCloudRequest,
@@ -408,6 +409,13 @@ export async function handleBrowserRequest(
         );
         return;
       case "router": {
+        // A kit declared routerless: answer at once rather than time out on
+        // every dashboard poll. 503 is what an unreachable router already
+        // produces here, so the UI's existing "router silent" handling applies.
+        if (routerPollingDisabled()) {
+          sendJson(response, 503, { error: "router_disabled" });
+          return;
+        }
         const path = route.path;
         const body = await readBody(request);
         if (ROUTER_URL_OVERRIDE) {
